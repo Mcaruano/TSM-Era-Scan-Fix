@@ -88,6 +88,7 @@ function AuctionQuery.__init(self)
 	self._customFilters = {}
 	self._isBrowseDoneFunc = nil
 	self._specifiedPage = nil
+	self._getAll = nil
 	self._resolveSellers = false
 	self._callback = nil
 	self._queryTemp = {}
@@ -124,6 +125,7 @@ function AuctionQuery.Release(self)
 	wipe(self._customFilters)
 	self._isBrowseDoneFunc = nil
 	self._specifiedPage = nil
+	self._getAll = nil
 	self._resolveSellers = false
 	self._callback = nil
 	wipe(self._queryTemp)
@@ -249,6 +251,13 @@ function AuctionQuery.SetPage(self, page)
 	else
 		error("Invalid page: "..tostring(page))
 	end
+	return self
+end
+
+function AuctionQuery.SetGetAll(self, getAll)
+	-- only currently support GetAll on classic
+	assert(not getAll or TSM.IsWowClassic())
+	self._getAll = getAll
 	return self
 end
 
@@ -409,7 +418,7 @@ function AuctionQuery._SetSort(self)
 		return true
 	end
 
-	local sorts = type(self._specifiedPage) == "string" and EMPTY_SORTS or DEFAULT_SORTS
+	local sorts = (type(self._specifiedPage) == "string" or self._getAll) and EMPTY_SORTS or DEFAULT_SORTS
 
 	if GetAuctionSort("list", #sorts + 1) == nil then
 		local properlySorted = true
@@ -470,7 +479,17 @@ function AuctionQuery._SendWowQuery(self)
 	-- build the query
 	local minLevel = self._minLevel ~= -math.huge and self._minLevel or nil
 	local maxLevel = self._maxLevel ~= math.huge and self._maxLevel or nil
-	if Environment.HasFeature(Environment.FEATURES.C_AUCTION_HOUSE) then
+	if TSM.IsWowClassic() then
+		if self._specifiedPage == "LAST" then
+			self._page = max(ceil(select(2, GetNumAuctionItems("list")) / NUM_AUCTION_ITEMS_PER_PAGE) - 1, 0)
+		elseif self._specifiedPage == "FIRST" then
+			self._page = 0
+		elseif self._specifiedPage then
+			self._page = self._specifiedPage
+		end
+		local minQuality = self._minQuality == -math.huge and 0 or self._minQuality
+		return AuctionHouseWrapper.QueryAuctionItems(self._str, minLevel, maxLevel, self._page, self._usable, minQuality, self._getAll, self._exact, self._classFiltersTemp)
+	else
 		wipe(self._filtersTemp)
 		if self._uncollected then
 			tinsert(self._filtersTemp, Enum.AuctionHouseFilter.UncollectedOnly)
@@ -583,13 +602,16 @@ function AuctionQuery._IsFiltered(self, row, isSubRow, itemKey)
 end
 
 function AuctionQuery._BrowseIsDone(self, isRetry)
-	if Environment.HasFeature(Environment.FEATURES.C_AUCTION_HOUSE) then
-		if self._isBrowseDoneFunc and self._isBrowseDoneFunc(self) then
+	if TSM.IsWowClassic() then
+		local numAuctions, totalAuctions = GetNumAuctionItems("list")
+		if totalAuctions <= NUM_AUCTION_ITEMS_PER_PAGE and numAuctions ~= totalAuctions then
+			-- there are cases where we get (0, 1) from the API - no idea why so just assume we're not done
+			return false
+		end
+		local numPages = ceil(totalAuctions / NUM_AUCTION_ITEMS_PER_PAGE)
+		if self._getAll then
 			return true
 		end
-		return C_AuctionHouse.HasFullBrowseResults()
-	else
-		local numPages = AuctionHouseWrapper.GetNumPages()
 		if self._specifiedPage then
 			if isRetry then
 				return false
@@ -617,9 +639,8 @@ function AuctionQuery._BrowseIsPageValid(self)
 end
 
 function AuctionQuery._BrowseRequestMore(self, isRetry)
-	if Environment.HasFeature(Environment.FEATURES.C_AUCTION_HOUSE) then
-		return AuctionHouseWrapper.RequestMoreBrowseResults()
-	else
+	if TSM.IsWowClassic() then
+		assert(not self._getAll)
 		if self._specifiedPage then
 			return self:_SendWowQuery()
 		end

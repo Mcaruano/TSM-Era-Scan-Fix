@@ -230,7 +230,15 @@ function AuctionScanManager.PrepareForBidOrBuyout(self, index, subRow, noSeller,
 end
 
 function AuctionScanManager.PlaceBidOrBuyout(self, index, bidBuyout, subRow, quantity)
-	if Environment.IsRetail() then
+	if TSM.IsWowClassic() then
+		local future = AuctionHouseWrapper.PlaceBid(index, bidBuyout)
+		if not future then
+			return false
+		end
+		-- TODO: return this future and record the buyout once the future is done
+		future:Cancel()
+		return true
+	else
 		local itemString = subRow:GetItemString()
 		local future = nil
 		if ItemInfo.IsCommodity(itemString) then
@@ -241,9 +249,12 @@ function AuctionScanManager.PlaceBidOrBuyout(self, index, bidBuyout, subRow, qua
 			future = AuctionHouseWrapper.PlaceBid(auctionId, bidBuyout)
 			quantity = 1
 		end
-		return future
-	else
-		return AuctionHouseWrapper.PlaceBid(index, bidBuyout)
+		if not future then
+			return false
+		end
+		-- TODO: return this future and record the buyout once the future is done
+		future:Cancel()
+		return true
 	end
 end
 

@@ -721,6 +721,7 @@ end
 
 function private.EventHandler(eventName, ...)
 	-- reduce the log spam of generic events by combining the message with the name and discarding arguments
+	local genericEventArg = nil
 	if eventName == "UI_ERROR_MESSAGE" and select(1, ...) == ERR_AUCTION_DATABASE_ERROR then
 		-- log an analytics event for "Internal Auction Error" messages
 		for apiName, wrapper in pairs(private.wrappers) do
@@ -731,9 +732,8 @@ function private.EventHandler(eventName, ...)
 		end
 	end
 	if GENERIC_EVENTS[eventName] then
-		local genericEventArg = select(GENERIC_EVENTS[eventName], ...)
+		genericEventArg = select(GENERIC_EVENTS[eventName], ...)
 		assert(genericEventArg)
-		genericEventArg = tostring(genericEventArg)
 		if not private.events[eventName][genericEventArg] then
 			return
 		end

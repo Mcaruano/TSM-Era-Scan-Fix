@@ -218,9 +218,10 @@ end
 -- [117] added global.storyBoardUIContext, updated global.craftingUIContext.{craftsScrollingTable,matsScrollingTable,gatheringScrollingTable}
 -- [118] updated factionrealm.internalData.crafts
 -- [119] added global.coreOptions.regionWide
+-- [120] Re-added support for scanning on Classic clients
 
 local SETTINGS_INFO = {
-	version = 119,
+	version = 120,
 	minVersion = 10,
 	global = {
 		debug = {
@@ -422,6 +423,9 @@ local SETTINGS_INFO = {
 			mats = { type = "table", default = {}, lastModifiedVersion = 10 },
 			guildGoldLog = { type = "table", default = {}, lastModifiedVersion = 25 },
 			guildGoldLogLastUpdate = { type = "table", default = {}, lastModifiedVersion = 83 },
+			csvAuctionDBScan = { type = "string", default = "", lastModifiedVersion = 50 },
+			auctionDBScanTime = { type = "number", default = 0, lastModifiedVersion = 50 },
+			auctionDBScanHash = { type = "number", default = 0, lastModifiedVersion = 50 },
 			isCraftFavorite = { type = "table", default = {}, lastModifiedVersion = 56 },
 		},
 		coreOptions = {
