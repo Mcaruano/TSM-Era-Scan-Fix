@@ -4,8 +4,9 @@
 --    All Rights Reserved - Detailed license information included with addon.     --
 -- ------------------------------------------------------------------------------ --
 
-local _, TSM = ...
+local TSM = select(2, ...) ---@type TSM
 local CraftingTask = TSM.Include("LibTSMClass").DefineClass("CraftingTask", TSM.TaskList.Task)
+local Environment = TSM.Include("Environment")
 local L = TSM.Include("Locale").GetTable()
 local CraftString = TSM.Include("Util.CraftString")
 local Table = TSM.Include("Util.Table")
@@ -13,6 +14,7 @@ local Event = TSM.Include("Util.Event")
 local Log = TSM.Include("Util.Log")
 local ItemString = TSM.Include("Util.ItemString")
 local BagTracking = TSM.Include("Service.BagTracking")
+local Profession = TSM.Include("Service.Profession")
 TSM.TaskList.CraftingTask = CraftingTask
 local private = {
 	currentlyCrafting = nil,
@@ -20,6 +22,7 @@ local private = {
 	pendingSpellId = nil,
 	pendingItemString = nil,
 	activeTasks = {},
+	numCraftableTemp = {},
 }
 
 
@@ -34,11 +37,12 @@ function CraftingTask.__init(self)
 	self._skillId = nil
 	self._craftStrings = {}
 	self._craftQuantity = {}
+	self._mats = {}
 
 	if not private.registeredCallbacks then
-		TSM.Crafting.ProfessionState.RegisterUpdateCallback(private.UpdateTasks)
-		TSM.Crafting.ProfessionScanner.RegisterHasScannedCallback(private.UpdateTasks)
-		BagTracking.RegisterCallback(private.UpdateTasks)
+		Profession.RegisterStateCallback(private.UpdateTasks)
+		Profession.RegisterHasScannedCallback(private.UpdateTasks)
+		BagTracking.RegisterQuantityCallback(private.UpdateTasksForBagQuantityChange)
 		private.registeredCallbacks = true
 
 		Event.Register("CHAT_MSG_LOOT", private.ChatMsgLootEventHandler)
@@ -65,6 +69,7 @@ function CraftingTask.Release(self)
 	self._skillId = nil
 	wipe(self._craftStrings)
 	wipe(self._craftQuantity)
+	wipe(self._mats)
 	private.activeTasks[self] = nil
 end
 
@@ -77,10 +82,15 @@ end
 function CraftingTask.WipeCraftStrings(self)
 	wipe(self._craftStrings)
 	wipe(self._craftQuantity)
+	wipe(self._mats)
 end
 
 function CraftingTask.HasCraftStrings(self)
 	return #self._craftStrings > 0
+end
+
+function CraftingTask.HasMat(self, itemString)
+	return self._mats[itemString] and true or false
 end
 
 function CraftingTask.GetProfession(self)
@@ -94,6 +104,9 @@ end
 function CraftingTask.AddCraftString(self, craftString, quantity)
 	tinsert(self._craftStrings, craftString)
 	self._craftQuantity[craftString] = quantity
+	for _, itemString in TSM.Crafting.MatIterator(craftString) do
+		self._mats[itemString] = (self._mats[itemString] or 0) + 1
+	end
 end
 
 function CraftingTask.OnMouseDown(self)
@@ -110,16 +123,7 @@ function CraftingTask.OnButtonClick(self)
 		local craftString = self._craftStrings[1]
 		local spellId = CraftString.GetSpellId(craftString)
 		local quantity = self._craftQuantity[craftString]
-		local _, numMax = nil, nil
-		if TSM.IsWowClassic() then
-			if TSM.Crafting.ProfessionState.IsClassicCrafting() then
-				_, numMax = 1, 1
-			else
-				_, numMax = GetTradeSkillNumMade(spellId)
-			end
-		else
-			_, numMax = C_TradeSkillUI.GetRecipeNumItemsProduced(spellId)
-		end
+		local _, numMax = Profession.GetCraftedQuantityRange(craftString)
 		if numMax and numMax > 1 then
 			-- need minimum this many repeats
 			quantity = ceil(quantity / numMax)
@@ -128,14 +132,14 @@ function CraftingTask.OnButtonClick(self)
 		private.currentlyCrafting = self
 		private.pendingSpellId = spellId
 		private.pendingItemString = TSM.Crafting.GetItemString(craftString)
-		local numCrafted = TSM.Crafting.ProfessionUtil.Craft(craftString, spellId, quantity, true, private.CraftCompleteCallback)
+		local numCrafted = TSM.Crafting.ProfessionUtil.Craft(craftString, spellId, quantity, true, nil, private.CraftCompleteCallback)
 		if numCrafted == 0 then
 			-- we're probably crafting something else already - so just bail
 			Log.Err("Failed to craft")
 			private.currentlyCrafting = nil
 		end
 	elseif self._buttonText == L["OPEN"] then
-		TSM.Crafting.ProfessionUtil.OpenProfession(self._profession, self._skillId)
+		Profession.Open(Environment.IsRetail() and self._skillId or self._profession)
 	else
 		error("Invalid state: "..tostring(self._buttonText))
 	end
@@ -149,7 +153,7 @@ end
 
 function CraftingTask.SubTaskIterator(self)
 	assert(self:HasCraftStrings())
-	sort(self._craftStrings, private.SpellIdSort)
+	self:_SortCraftStrings()
 	return private.SubTaskIterator, self, 0
 end
 
@@ -160,14 +164,14 @@ end
 -- ============================================================================
 
 function CraftingTask._UpdateState(self)
-	sort(self._craftStrings, private.SpellIdSort)
+	self:_SortCraftStrings()
 	if TSM.Crafting.ProfessionUtil.GetNumCraftableFromDB(self._craftStrings[1]) == 0 then
 		-- don't have the mats to craft this
 		return self:_SetButtonState(false, L["NEED MATS"])
-	elseif self._profession ~= TSM.Crafting.ProfessionState.GetCurrentProfession() then
+	elseif self._profession ~= Profession.GetCurrentProfession() then
 		-- the profession isn't opened
 		return self:_SetButtonState(true, L["OPEN"])
-	elseif not TSM.Crafting.ProfessionScanner.HasScanned() then
+	elseif not Profession.HasScanned() then
 		-- the profession is opened, but we haven't yet fully scanned it
 		return self:_SetButtonState(false, strupper(OPENING))
 	elseif private.currentlyCrafting == self then
@@ -183,6 +187,21 @@ end
 function CraftingTask._RemoveCraftString(self, craftString)
 	assert(Table.RemoveByValue(self._craftStrings, craftString) == 1)
 	self._craftQuantity[craftString] = nil
+	for _, itemString in TSM.Crafting.MatIterator(craftString) do
+		self._mats[itemString] = self._mats[itemString] - 1
+		if self._mats[itemString] == 0 then
+			self._mats[itemString] = nil
+		end
+	end
+end
+
+function CraftingTask._SortCraftStrings(self)
+	assert(not next(private.numCraftableTemp))
+	for _, craftString in ipairs(self._craftStrings) do
+		private.numCraftableTemp[craftString] = TSM.Crafting.ProfessionUtil.GetNumCraftableFromDB(craftString)
+	end
+	Table.SortWithValueLookup(self._craftStrings, private.numCraftableTemp, true)
+	wipe(private.numCraftableTemp)
 end
 
 
@@ -196,16 +215,7 @@ function private.ChatMsgLootEventHandler(_, msg)
 		return
 	end
 	local msgItemLink, quantity = nil, nil
-	local numMin, numMax = nil, nil
-	if TSM.IsWowClassic() then
-		if TSM.Crafting.ProfessionState.IsClassicCrafting() then
-			numMin, numMax = 1, 1
-		else
-			numMin, numMax = GetTradeSkillNumMade(private.pendingSpellId)
-		end
-	else
-		numMin, numMax = C_TradeSkillUI.GetRecipeNumItemsProduced(private.pendingSpellId)
-	end
+	local numMin, numMax = Profession.GetCraftedQuantityRange(CraftString.Get(private.pendingSpellId))
 	if numMin == 1 then
 		numMin = numMin + 1
 	end
@@ -289,11 +299,15 @@ function private.UpdateTasks()
 	end
 end
 
-function private.SpellIdSort(a, b)
-	local aNumCraftable = TSM.Crafting.ProfessionUtil.GetNumCraftableFromDB(a)
-	local bNumCraftable = TSM.Crafting.ProfessionUtil.GetNumCraftableFromDB(b)
-	if aNumCraftable == bNumCraftable then
-		return a < b
+function private.UpdateTasksForBagQuantityChange(updatedItems)
+	for task in pairs(private.activeTasks) do
+		if task:HasCraftStrings() then
+			for itemString in pairs(updatedItems) do
+				if task:HasMat(itemString) then
+					task:Update()
+					break
+				end
+			end
+		end
 	end
-	return aNumCraftable > bNumCraftable
 end

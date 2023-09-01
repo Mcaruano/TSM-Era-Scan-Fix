@@ -4,7 +4,7 @@
 --    All Rights Reserved - Detailed license information included with addon.     --
 -- ------------------------------------------------------------------------------ --
 
-local _, TSM = ...
+local TSM = select(2, ...) ---@type TSM
 local Accounting = TSM.Tooltip:NewPackage("Accounting")
 local L = TSM.Include("Locale").GetTable()
 local Math = TSM.Include("Util.Math")
@@ -55,8 +55,8 @@ function private.PopulateSaleLines(tooltip, itemString)
 		avgSalePrice = totalPrice and Math.Round(totalPrice / totalSaleNum) or nil
 		lastSaleTime = TSM.Accounting.Transactions.GetLastSaleTime(itemString)
 		if not showTotals then
-			minSellPrice = CustomPrice.GetItemPrice(itemString, "MinSell") or 0
-			maxSellPrice = CustomPrice.GetItemPrice(itemString, "MaxSell") or 0
+			minSellPrice = CustomPrice.GetSourcePrice(itemString, "MinSell") or 0
+			maxSellPrice = CustomPrice.GetSourcePrice(itemString, "MaxSell") or 0
 		end
 	end
 
@@ -109,7 +109,7 @@ function private.PopulateSaleRateLine(tooltip, itemString)
 		-- example tooltip
 		saleRate = 0.7
 	else
-		saleRate = CustomPrice.GetItemPrice(itemString, "SaleRate")
+		saleRate = CustomPrice.GetSourcePrice(itemString, "SaleRate")
 		if not saleRate then
 			return
 		end
@@ -129,14 +129,14 @@ function private.PopulatePurchaseLines(tooltip, itemString)
 		maxPrice = 55
 		lastBuyTime = time() - 3600
 	else
-		smartAvgPrice = CustomPrice.GetItemPrice(itemString, "SmartAvgBuy")
+		smartAvgPrice = CustomPrice.GetSourcePrice(itemString, "SmartAvgBuy")
 		totalPrice, totalNum = TSM.Accounting.Transactions.GetBuyStats(itemString, false)
 		if not totalPrice then
 			return
 		end
 		if not showTotals then
-			minPrice = CustomPrice.GetItemPrice(itemString, "MinBuy") or 0
-			maxPrice = CustomPrice.GetItemPrice(itemString, "MaxBuy") or 0
+			minPrice = CustomPrice.GetSourcePrice(itemString, "MinBuy") or 0
+			maxPrice = CustomPrice.GetSourcePrice(itemString, "MaxBuy") or 0
 		end
 		lastBuyTime = TSM.Accounting.Transactions.GetLastBuyTime(itemString)
 	end
@@ -148,6 +148,6 @@ function private.PopulatePurchaseLines(tooltip, itemString)
 		assert(minPrice and maxPrice)
 		tooltip:AddQuantityValueLine(L["Purchased (Min/Avg/Max Price)"], totalNum, minPrice, Math.Round(totalPrice / totalNum), maxPrice)
 	end
-	tooltip:AddValueLine(L["Smart Avg Buy Price"], smartAvgPrice)
+	tooltip:AddItemValueLine(L["Smart Avg Buy Price"], smartAvgPrice)
 	tooltip:AddTextLine(L["Last Purchased"], format(L["%s ago"], SecondsToTime(time() - lastBuyTime)))
 end

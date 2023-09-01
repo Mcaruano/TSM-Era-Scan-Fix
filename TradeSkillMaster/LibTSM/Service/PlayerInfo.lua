@@ -4,22 +4,21 @@
 --    All Rights Reserved - Detailed license information included with addon.     --
 -- ------------------------------------------------------------------------------ --
 
---- PlayerInfo Functions
--- @module PlayerInfo
-
-local _, TSM = ...
-local PlayerInfo = TSM.Init("Service.PlayerInfo")
+local TSM = select(2, ...) ---@type TSM
+local PlayerInfo = TSM.Init("Service.PlayerInfo") ---@class Service.PlayerInfo
 local String = TSM.Include("Util.String")
+local TempTable = TSM.Include("Util.TempTable")
+local Table = TSM.Include("Util.Table")
+local Wow = TSM.Include("Util.Wow")
 local Settings = TSM.Include("Service.Settings")
 local private = {
 	connectedAlts = {},
 	settings = nil,
 	isPlayerCache = {},
 }
-local PLAYER_NAME = UnitName("player")
-local PLAYER_LOWER = strlower(PLAYER_NAME)
-local FACTION_LOWER = strlower(UnitFactionGroup("player"))
-local REALM_LOWER = strlower(GetRealmName())
+local PLAYER_LOWER = strlower(Wow.GetCharacterName())
+local FACTION_LOWER = strlower(Wow.GetFactionName())
+local REALM_LOWER = strlower(Wow.GetRealmName())
 local PLAYER_REALM_LOWER = PLAYER_LOWER.." - "..REALM_LOWER
 
 
@@ -33,6 +32,8 @@ PlayerInfo:OnSettingsLoad(function()
 		:AddKey("factionrealm", "internalData", "guildVaults")
 		:AddKey("factionrealm", "coreOptions", "ignoreGuilds")
 		:AddKey("factionrealm", "internalData", "characterGuilds")
+		:AddKey("sync", "internalData", "classKey")
+		:AddKey("global", "coreOptions", "regionWide")
 end)
 
 
@@ -41,16 +42,18 @@ end)
 -- Module Functions
 -- ============================================================================
 
---- Return all connected realm alternative characters.
--- @return table The populated alternative characters.
+---Return all connected realm alt characters as a table.
+---@return table
 function PlayerInfo.GetConnectedAlts()
 	wipe(private.connectedAlts)
-	for factionrealm in TSM.db:GetConnectedRealmIterator("factionrealm") do
-		for _, character in TSM.db:FactionrealmCharacterIterator(factionrealm) do
-			local realm = strmatch(factionrealm, ".+ %- (.+)")
-			character = Ambiguate(gsub(strmatch(character, "(.*) ?"..String.Escape("-").."?").."-"..gsub(realm, String.Escape("-"), ""), " ", ""), "none")
-			if character ~= UnitName("player") then
-				tinsert(private.connectedAlts, character)
+	for factionrealm, isConnected in TSM.db:GetConnectedRealmIterator("factionrealm") do
+		if isConnected or private.settings.regionWide then
+			for _, character in TSM.db:FactionrealmCharacterIterator(factionrealm) do
+				local realm = strmatch(factionrealm, ".+ %- (.+)")
+				character = Ambiguate(gsub(strmatch(character, "(.*) ?"..String.Escape("-").."?").."-"..gsub(realm, String.Escape("-"), ""), " ", ""), "none")
+				if character ~= Wow.GetCharacterName() then
+					tinsert(private.connectedAlts, character)
+				end
 			end
 		end
 	end
@@ -58,41 +61,52 @@ function PlayerInfo.GetConnectedAlts()
 	return private.connectedAlts
 end
 
---- Iterate over all characters on this factionrealm.
--- @tparam[opt=false] boolean currentAccountOnly If true, will only include the current account
--- @return An iterator with the following fields: `index, name`
+---Iterate over all characters which are accessible.
+---@param currentAccountOnly boolean If true, will only include the current account
+---@return fun():number, string, string @An iterator with the following fields: `index, character, factionrealm`
 function PlayerInfo.CharacterIterator(currentAccountOnly)
-	if currentAccountOnly then
-		return Settings.CharacterByAccountFactionrealmIterator()
-	else
-		return Settings.FactionrealmCharacterIterator()
+	local result = TempTable.Acquire()
+	for _, _, character, factionrealm, _, isConnected in private.settings:AccessibleValueIterator("classKey") do
+		if isConnected or private.settings.regionWide then
+			if not currentAccountOnly or Settings.IsCurrentAccountOwner(character, factionrealm) then
+				Table.InsertMultiple(result, character, factionrealm)
+			end
+		end
 	end
+	return TempTable.Iterator(result, 2)
 end
 
---- Iterate over all guilds on this factionrealm.
--- @tparam[opt=false] boolean includeIgnored If true, will include guilds which have been set to be ignored
--- @return An iterator with the following fields: `index, guildName`
+---Iterate over all the guilds which are accessible.
+---@param includeIgnored boolean Include ignored guilds
+---@return fun():number, string, string @An iterator with the following fields: `index, guildName, factionrealm`
 function PlayerInfo.GuildIterator(includeIgnored)
-	if includeIgnored then
-		return private.GuildIteratorIgnoreIncluded, private.settings.guildVaults
-	else
-		return private.GuildIterator, private.settings.guildVaults
+	local result = TempTable.Acquire()
+	for _, guildVaults, factionrealm, isConnected in private.settings:AccessibleValueIterator("guildVaults") do
+		if isConnected or private.settings.regionWide then
+			local ignoreGuilds = private.settings:GetForScopeKey("ignoreGuilds", factionrealm)
+			for guildName in pairs(guildVaults) do
+				if includeIgnored or not ignoreGuilds[guildName] then
+					Table.InsertMultiple(result, guildName, factionrealm)
+				end
+			end
+		end
 	end
+	return TempTable.Iterator(result, 2)
 end
 
---- Get the player's guild.
--- @tparam string player The name of the player
--- @treturn ?string The name of the player's guilde or nil if it's not in one
-function PlayerInfo.GetPlayerGuild(player)
-	return player and private.settings.characterGuilds[player] or nil
+---Get the player's guild.
+---@param player string The name of the player
+---@return string? @The name of the player's guilde or nil if it's not in one
+function PlayerInfo.GetPlayerGuild(character, factionrealm)
+	return private.settings:GetForScopeKey("characterGuilds", factionrealm)[character]
 end
 
---- Check whether or not a player belongs to the user.
--- @tparam string target The name of the player
--- @tparam boolean includeAlts Whether or not to include alts
--- @tparam boolean includeOtherFaction Whether or not to include players on the other faction
--- @tparam boolean includeOtherAccounts Whether or not to include connected accounts
--- @treturn boolean Whether or not the player belongs to the user
+---Check whether or not a player belongs to the user.
+---@param target string The name of the player
+---@param includeAlts boolean Whether or not to include alts
+---@param includeOtherFaction boolean Whether or not to include players on the other faction
+---@param includeOtherAccounts boolean Whether or not to include connected accounts
+---@return boolean
 function PlayerInfo.IsPlayer(target, includeAlts, includeOtherFaction, includeOtherAccounts)
 	local cacheKey = strjoin("%", target, includeAlts and "1" or "0", includeOtherFaction and "1" or "0", includeOtherAccounts and "1" or "0")
 	if private.isPlayerCache.lastUpdate ~= GetTime() then
@@ -126,32 +140,16 @@ function private.IsPlayerHelper(target, includeAlts, includeOtherFaction, includ
 	end
 	if includeAlts then
 		local result = false
-		for _, factionrealm, character in Settings.ConnectedFactionrealmAltCharacterIterator() do
-			local factionKey, realm = strmatch(factionrealm, "(.+) %- (.+)")
-			factionKey = strlower(factionKey)
-			if not result and target == strlower(character).." - "..strlower(realm) and (includeOtherFaction or factionKey == FACTION_LOWER) and (includeOtherAccounts or Settings.IsCurrentAccountOwner(character)) then
-				result = true
+		for _, factionrealm, character, _, isConnected in Settings.ConnectedFactionrealmAltCharacterIterator() do
+			if isConnected or private.settings.regionWide then
+				local factionKey, realm = strmatch(factionrealm, "(.+) %- (.+)")
+				factionKey = strlower(factionKey)
+				if not result and target == strlower(character).." - "..strlower(realm) and (includeOtherFaction or factionKey == FACTION_LOWER) and (includeOtherAccounts or Settings.IsCurrentAccountOwner(character, factionrealm)) then
+					result = true
+				end
 			end
 		end
 		return result
 	end
 	return false
-end
-
-function private.GuildIterator(tbl, prevName)
-	while true do
-		local name = next(tbl, prevName)
-		if not name then
-			return nil
-		end
-		if not private.settings.ignoreGuilds[name] then
-			return name
-		end
-		prevName = name
-	end
-end
-
-function private.GuildIteratorIgnoreIncluded(tbl, prevName)
-	local name = next(tbl, prevName)
-	return name
 end

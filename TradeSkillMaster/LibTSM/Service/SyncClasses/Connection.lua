@@ -4,7 +4,7 @@
 --    All Rights Reserved - Detailed license information included with addon.     --
 -- ------------------------------------------------------------------------------ --
 
-local _, TSM = ...
+local TSM = select(2, ...) ---@type TSM
 local Connection = TSM.Init("Service.SyncClasses.Connection")
 local L = TSM.Include("Locale").GetTable()
 local Delay = TSM.Include("Util.Delay")
@@ -30,6 +30,9 @@ local private = {
 	connectionRequestReceived = {},
 	addedFriends = {},
 	invalidCharacters = {},
+	managementTimer = nil,
+	newAccountTimer = nil,
+	friendsInfoTimer = nil,
 }
 local RECEIVE_TIMEOUT = 5
 local HEARTBEAT_TIMEOUT = 10
@@ -41,6 +44,9 @@ local HEARTBEAT_TIMEOUT = 10
 -- ============================================================================
 
 Connection:OnSettingsLoad(function()
+	private.managementTimer = Delay.CreateTimer("SYNC_CONNECTION_MANAGEMENT", private.ManagementLoop)
+	private.newAccountTimer = Delay.CreateTimer("SYNC_CONNECTION_NEW_ACCOUNT", private.SendNewAccountWhoAmI)
+	private.friendsInfoTimer = Delay.CreateTimer("SYNC_CONNECTION_FRIENDS_INFO", private.RequestFriendsInfo)
 	Event.Register("CHAT_MSG_SYSTEM", private.ChatMsgSystemEventHandler)
 	Event.Register("FRIENDLIST_UPDATE", private.PrepareFriendsInfo)
 	for _ in Settings.SyncAccountIterator() do
@@ -48,8 +54,8 @@ Connection:OnSettingsLoad(function()
 	end
 	Comm.RegisterHandler(Constants.DATA_TYPES.WHOAMI_ACCOUNT, private.WhoAmIAccountHandler)
 	Comm.RegisterHandler(Constants.DATA_TYPES.WHOAMI_ACK, private.WhoAmIAckHandler)
-	Comm.RegisterHandler(Constants.DATA_TYPES.CONNECTION_REQUEST, private.ConnectionHandler)
-	Comm.RegisterHandler(Constants.DATA_TYPES.CONNECTION_REQUEST_ACK, private.ConnectionHandler)
+	Comm.RegisterHandler(Constants.DATA_TYPES.CONNECTION_REQUEST, private.ConnectionRequestAndAckHandler)
+	Comm.RegisterHandler(Constants.DATA_TYPES.CONNECTION_REQUEST_ACK, private.ConnectionRequestAndAckHandler)
 	Comm.RegisterHandler(Constants.DATA_TYPES.DISCONNECT, private.DisconnectHandler)
 	Comm.RegisterHandler(Constants.DATA_TYPES.HEARTBEAT, private.HeartbeatHandler)
 
@@ -110,13 +116,13 @@ function Connection.Establish(targetCharacter)
 	end
 	if not private.isActive then
 		private.isActive = true
-		Delay.AfterTime("SYNC_CONNECTION_MANAGEMENT", 1, private.ManagementLoop, 1)
+		private.managementTimer:RunForTime(1)
 	end
 	private.newCharacter = targetCharacter
 	private.newAccount = nil
 	private.newSyncAcked = nil
-	Delay.Cancel("syncNewAccount")
-	Delay.AfterTime("syncNewAccount", 0, private.SendNewAccountWhoAmI, 1)
+	private.newAccountTimer:Cancel()
+	private.newAccountTimer:RunForTime(0)
 	return true
 end
 
@@ -153,8 +159,7 @@ end
 -- Message Handlers
 -- ============================================================================
 
-function private.WhoAmIAckHandler(dataType, sourceAccount, sourceCharacter, data)
-	assert(dataType == Constants.DATA_TYPES.WHOAMI_ACK)
+function private.WhoAmIAckHandler(sourceAccount, sourceCharacter, data)
 	if not private.newCharacter or strlower(private.newCharacter) ~= strlower(sourceCharacter) then
 		-- we aren't trying to connect with a new account
 		return
@@ -164,8 +169,7 @@ function private.WhoAmIAckHandler(dataType, sourceAccount, sourceCharacter, data
 	private.CheckNewAccountStatus()
 end
 
-function private.WhoAmIAccountHandler(dataType, sourceAccount, sourceCharacter, data)
-	assert(dataType == Constants.DATA_TYPES.WHOAMI_ACCOUNT)
+function private.WhoAmIAccountHandler(sourceAccount, sourceCharacter, data)
 	if not private.newCharacter then
 		-- we aren't trying to connect with a new account
 		return
@@ -180,15 +184,14 @@ function private.WhoAmIAccountHandler(dataType, sourceAccount, sourceCharacter, 
 	private.CheckNewAccountStatus()
 end
 
-function private.ConnectionHandler(dataType, sourceAccount, sourceCharacter, data)
+function private.ConnectionRequestAndAckHandler(sourceAccount, sourceCharacter, data)
 	if not private.threadRunning[sourceAccount] then
 		return
 	end
 	private.connectionRequestReceived[sourceAccount] = true
 end
 
-function private.DisconnectHandler(dataType, sourceAccount, sourceCharacter, data)
-	assert(dataType == Constants.DATA_TYPES.DISCONNECT)
+function private.DisconnectHandler(sourceAccount, sourceCharacter, data)
 	if not private.threadRunning[sourceAccount] then
 		return
 	end
@@ -199,8 +202,7 @@ function private.DisconnectHandler(dataType, sourceAccount, sourceCharacter, dat
 	private.suppressThreadTime[sourceAccount] = time() + 2
 end
 
-function private.HeartbeatHandler(dataType, sourceAccount, sourceCharacter)
-	assert(dataType == Constants.DATA_TYPES.HEARTBEAT)
+function private.HeartbeatHandler(sourceAccount, sourceCharacter)
 	if not Connection.IsCharacterConnected(sourceCharacter) then
 		-- we're not connected to this player
 		return
@@ -236,17 +238,18 @@ function private.PrepareFriendsInfo()
 	if isValid then
 		if not private.hasFriendsInfo and private.isActive then
 			-- start the management loop
-			Delay.AfterTime("SYNC_CONNECTION_MANAGEMENT", 1, private.ManagementLoop, 1)
+			private.managementTimer:RunForTime(1)
 		end
 		private.hasFriendsInfo = true
 	else
 		-- try again
 		Log.Err("Missing friends info - will try again")
-		Delay.AfterTime("SYNC_PREPARE_FRIENDS_INFO", 0.5, private.RequestFriendsInfo)
+		private.friendsInfoTimer:RunForTime(0.5)
 	end
 end
 
 function private.ManagementLoop()
+	private.managementTimer:RunForTime(1)
 	-- continuously spawn connection threads with online players as necessary
 	private.RequestFriendsInfo()
 	local hasAccount = false
@@ -267,7 +270,7 @@ function private.ManagementLoop()
 		Log.Info("No more sync accounts.")
 		private.isActive = false
 		if not private.newCharacter then
-			Delay.Cancel("SYNC_CONNECTION_MANAGEMENT")
+			private.managementTimer:Cancel()
 		end
 	end
 end
@@ -356,11 +359,12 @@ end
 
 function private.SendNewAccountWhoAmI()
 	if not private.newCharacter then
-		Delay.Cancel("syncNewAccount")
+		private.newAccountTimer:Cancel()
 	elseif not C_FriendList.GetFriendInfo(private.newCharacter) then
 		Log.Info("Waiting for friends list to update")
+		private.newAccountTimer:RunForTime(1)
 	elseif not private.IsOnline(private.newCharacter) then
-		Delay.Cancel("syncNewAccount")
+		private.newAccountTimer:Cancel()
 		private.newCharacter = nil
 		private.newAccount = nil
 		private.newSyncAcked = nil
@@ -368,6 +372,7 @@ function private.SendNewAccountWhoAmI()
 	else
 		Comm.SendData(Constants.DATA_TYPES.WHOAMI_ACCOUNT, private.newCharacter)
 		Log.Info("Sent WHOAMI_ACCOUNT")
+		private.newAccountTimer:RunForTime(1)
 	end
 end
 

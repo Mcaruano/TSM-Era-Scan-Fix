@@ -4,7 +4,7 @@
 --    All Rights Reserved - Detailed license information included with addon.     --
 -- ------------------------------------------------------------------------------ --
 
-local _, TSM = ...
+local TSM = select(2, ...) ---@type TSM
 local Mirror = TSM.Init("Service.SyncClasses.Mirror")
 local Delay = TSM.Include("Util.Delay")
 local TempTable = TSM.Include("Util.TempTable")
@@ -18,6 +18,7 @@ local private = {
 	numConnected = 0,
 	accountStatus = {},
 	callbacks = {},
+	characterHashesTimer = nil,
 }
 local BROADCAST_INTERVAL = 3
 
@@ -28,6 +29,7 @@ local BROADCAST_INTERVAL = 3
 -- ============================================================================
 
 Mirror:OnModuleLoad(function()
+	private.characterHashesTimer = Delay.CreateTimer("SYNC_MIRROR_CHARACTER_HASHES", private.SendCharacterHashes)
 	Connection.RegisterConnectionChangedCallback(private.ConnectionChangedHandler)
 	Comm.RegisterHandler(Constants.DATA_TYPES.CHARACTER_HASHES_BROADCAST, private.CharacterHashesBroadcastHandler)
 	Comm.RegisterHandler(Constants.DATA_TYPES.CHARACTER_SETTING_HASHES_REQUEST, private.CharacterSettingHashesRequestHandler)
@@ -79,11 +81,11 @@ function private.ConnectionChangedHandler(account, player, connected)
 	assert(private.numConnected >= 0)
 	if connected then
 		private.accountStatus[account] = "UPDATING"
-		Delay.AfterTime("mirrorCharacterHashes", 0, private.SendCharacterHashes, BROADCAST_INTERVAL)
+		private.characterHashesTimer:RunForTime(0)
 	else
 		private.accountStatus[account] = nil
 		if private.numConnected == 0 then
-			Delay.Cancel("mirrorCharacterHashes")
+			private.characterHashesTimer:Cancel()
 		end
 	end
 end
@@ -96,6 +98,7 @@ end
 
 function private.SendCharacterHashes()
 	assert(private.numConnected > 0)
+	private.characterHashesTimer:RunForTime(BROADCAST_INTERVAL)
 
 	-- calculate the hashes of the sync settings for all characters on this account
 	local hashes = TempTable.Acquire()
@@ -116,8 +119,7 @@ end
 -- Message Handlers
 -- ============================================================================
 
-function private.CharacterHashesBroadcastHandler(dataType, sourceAccount, sourcePlayer, data)
-	assert(dataType == Constants.DATA_TYPES.CHARACTER_HASHES_BROADCAST)
+function private.CharacterHashesBroadcastHandler(sourceAccount, sourcePlayer, data)
 	if not Connection.IsCharacterConnected(sourcePlayer) then
 		-- we're not connected to this player
 		Log.Warn("Got CHARACTER_HASHES_BROADCAST for player which isn't connected")
@@ -153,8 +155,7 @@ function private.CharacterHashesBroadcastHandler(dataType, sourceAccount, source
 	end
 end
 
-function private.CharacterSettingHashesRequestHandler(dataType, sourceAccount, sourcePlayer, data)
-	assert(dataType == Constants.DATA_TYPES.CHARACTER_SETTING_HASHES_REQUEST)
+function private.CharacterSettingHashesRequestHandler(sourceAccount, sourcePlayer, data)
 	if not Connection.IsCharacterConnected(sourcePlayer) then
 		-- we're not connected to this player
 		Log.Warn("Got CHARACTER_HASHES_BROADCAST for player which isn't connected")
@@ -174,8 +175,7 @@ function private.CharacterSettingHashesRequestHandler(dataType, sourceAccount, s
 	TempTable.Release(responseData)
 end
 
-function private.CharacterSettingHashesResponseHandler(dataType, sourceAccount, sourcePlayer, data)
-	assert(dataType == Constants.DATA_TYPES.CHARACTER_SETTING_HASHES_RESPONSE)
+function private.CharacterSettingHashesResponseHandler(sourceAccount, sourcePlayer, data)
 	if not Connection.IsCharacterConnected(sourcePlayer) then
 		-- we're not connected to this player
 		Log.Warn("Got CHARACTER_HASHES_BROADCAST for player which isn't connected")
@@ -194,8 +194,7 @@ function private.CharacterSettingHashesResponseHandler(dataType, sourceAccount, 
 	end
 end
 
-function private.CharacterSettingDataRequestHandler(dataType, sourceAccount, sourcePlayer, data)
-	assert(dataType == Constants.DATA_TYPES.CHARACTER_SETTING_DATA_REQUEST)
+function private.CharacterSettingDataRequestHandler(sourceAccount, sourcePlayer, data)
 	local character, namespace, settingKey = strsplit(".", data)
 	if not Connection.IsCharacterConnected(sourcePlayer) then
 		-- we're not connected to this player
@@ -216,8 +215,7 @@ function private.CharacterSettingDataRequestHandler(dataType, sourceAccount, sou
 	TempTable.Release(responseData)
 end
 
-function private.CharacterSettingDataResponseHandler(dataType, sourceAccount, sourcePlayer, data)
-	assert(dataType == Constants.DATA_TYPES.CHARACTER_SETTING_DATA_RESPONSE)
+function private.CharacterSettingDataResponseHandler(sourceAccount, sourcePlayer, data)
 	if not Connection.IsCharacterConnected(sourcePlayer) then
 		-- we're not connected to this player
 		Log.Warn("Got CHARACTER_HASHES_BROADCAST for player which isn't connected")
@@ -235,7 +233,7 @@ function private.CharacterSettingDataResponseHandler(dataType, sourceAccount, so
 		Settings.Set("sync", Settings.GetSyncScopeKeyByCharacter(data.character), data.namespace, data.settingKey, data.data)
 	end
 	for _, callback in ipairs(private.callbacks) do
-		callback()
+		callback(data.settingKey)
 	end
 end
 

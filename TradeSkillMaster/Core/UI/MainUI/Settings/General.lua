@@ -4,24 +4,30 @@
 --    All Rights Reserved - Detailed license information included with addon.     --
 -- ------------------------------------------------------------------------------ --
 
-local _, TSM = ...
+local TSM = select(2, ...) ---@type TSM
 local General = TSM.MainUI.Settings:NewPackage("General")
+local Environment = TSM.Include("Environment")
 local L = TSM.Include("Locale").GetTable()
 local Log = TSM.Include("Util.Log")
 local TempTable = TSM.Include("Util.TempTable")
 local Table = TSM.Include("Util.Table")
 local Theme = TSM.Include("Util.Theme")
+local Wow = TSM.Include("Util.Wow")
 local Settings = TSM.Include("Service.Settings")
 local Sync = TSM.Include("Service.Sync")
 local PlayerInfo = TSM.Include("Service.PlayerInfo")
 local Tooltip = TSM.Include("UI.Tooltip")
 local UIElements = TSM.Include("UI.UIElements")
+local UIUtils = TSM.Include("UI.UIUtils")
 local private = {
+	settings = nil,
 	frame = nil,
 	characterList = {},
+	characterKeys = {},
 	guildList = {},
 	chatFrameList = {},
 }
+local CHARACTER_SEP = "\001"
 
 
 
@@ -30,6 +36,12 @@ local private = {
 -- ============================================================================
 
 function General.OnInitialize()
+	private.settings = Settings.NewView()
+		:AddKey("global", "coreOptions", "regionWide")
+		:AddKey("global", "coreOptions", "globalOperations")
+		:AddKey("global", "coreOptions", "protectAuctionHouse")
+		:AddKey("global", "coreOptions", "chatFrame")
+		:AddKey("factionrealm", "coreOptions", "ignoreGuilds")
 	TSM.MainUI.Settings.RegisterSettingPage(L["General Settings"], "top", private.GetGeneralSettingsFrame)
 	Sync.RegisterConnectionChangedCallback(private.SyncConnectionChangedCallback)
 end
@@ -41,7 +53,7 @@ end
 -- ============================================================================
 
 function private.GetGeneralSettingsFrame()
-	TSM.UI.AnalyticsRecordPathChange("main", "settings", "general")
+	UIUtils.AnalyticsRecordPathChange("main", "settings", "general")
 	wipe(private.chatFrameList)
 	local defaultChatFrame = nil
 	for i = 1, NUM_CHAT_WINDOWS do
@@ -53,9 +65,9 @@ function private.GetGeneralSettingsFrame()
 			tinsert(private.chatFrameList, name)
 		end
 	end
-	if not tContains(private.chatFrameList, TSM.db.global.coreOptions.chatFrame) then
+	if not tContains(private.chatFrameList, private.settings.chatFrame) then
 		if tContains(private.chatFrameList, defaultChatFrame) then
-			TSM.db.global.coreOptions.chatFrame = defaultChatFrame
+			private.settings.chatFrame = defaultChatFrame
 			Log.SetChatFrame(defaultChatFrame)
 		else
 			-- all chat frames are hidden, so just disable the setting
@@ -64,14 +76,16 @@ function private.GetGeneralSettingsFrame()
 	end
 
 	wipe(private.characterList)
-	for _, character in PlayerInfo.CharacterIterator(true) do
-		if character ~= UnitName("player") then
-			tinsert(private.characterList, character)
+	wipe(private.characterKeys)
+	for _, character, factionrealm in PlayerInfo.CharacterIterator(true) do
+		if not Wow.IsPlayer(character, factionrealm) then
+			tinsert(private.characterKeys, character..CHARACTER_SEP..factionrealm)
+			tinsert(private.characterList, Wow.FormatCharacterName(character, factionrealm))
 		end
 	end
 
 	wipe(private.guildList)
-	for guild in PlayerInfo.GuildIterator(true) do
+	for _, guild in PlayerInfo.GuildIterator(true) do
 		tinsert(private.guildList, guild)
 	end
 
@@ -80,16 +94,17 @@ function private.GetGeneralSettingsFrame()
 		:SetScript("OnUpdate", private.FrameOnUpdate)
 		:SetScript("OnHide", private.FrameOnHide)
 		:AddChild(TSM.MainUI.Settings.CreateExpandableSection("General", "general", L["General Options"], L["Some general TSM options are below."])
-			:AddChild(UIElements.New("Frame", "check1")
+			:AddChildIf(Environment.HasFeature(Environment.FEATURES.REGION_WIDE_TRADING), UIElements.New("Frame", "check1")
 				:SetLayout("HORIZONTAL")
 				:SetHeight(20)
 				:SetMargin(0, 0, 0, 12)
-				:AddChild(UIElements.New("Checkbox", "globalOperations")
+				:AddChild(UIElements.New("Checkbox", "regionWide")
 					:SetWidth("AUTO")
 					:SetFont("BODY_BODY2_MEDIUM")
-					:SetText(L["Store operations globally"])
-					:SetChecked(TSM.Operations.IsStoredGlobally())
-					:SetScript("OnValueChanged", private.GlobalOperationsOnValueChanged)
+					:SetText(L["Enable region-wide trading (requires reload)"])
+					:SetSettingInfo(private.settings, "regionWide")
+					:SetScript("OnValueChanged", private.RegionWideOnValueChanged)
+					:SetTooltip(L["If enabled, TSM will load data (i.e. inventory / Accounting / gold tracking) from every realm you have characters on, instead of just connected realms."])
 				)
 				:AddChild(UIElements.New("Spacer", "spacer"))
 			)
@@ -97,11 +112,24 @@ function private.GetGeneralSettingsFrame()
 				:SetLayout("HORIZONTAL")
 				:SetHeight(20)
 				:SetMargin(0, 0, 0, 12)
+				:AddChild(UIElements.New("Checkbox", "globalOperations")
+					:SetWidth("AUTO")
+					:SetFont("BODY_BODY2_MEDIUM")
+					:SetText(L["Share operations between all profiles"])
+					:SetChecked(TSM.Operations.IsStoredGlobally())
+					:SetScript("OnValueChanged", private.GlobalOperationsOnValueChanged)
+				)
+				:AddChild(UIElements.New("Spacer", "spacer"))
+			)
+			:AddChildIf(not Environment.IsRetail(), UIElements.New("Frame", "check3")
+				:SetLayout("HORIZONTAL")
+				:SetHeight(20)
+				:SetMargin(0, 0, 0, 12)
 				:AddChild(UIElements.New("Checkbox", "protectAuctionHouse")
 					:SetWidth("AUTO")
 					:SetFont("BODY_BODY2_MEDIUM")
 					:SetText(L["Prevent closing the Auction House with the esc key"])
-					:SetSettingInfo(TSM.db.global.coreOptions, "protectAuctionHouse")
+					:SetSettingInfo(private.settings, "protectAuctionHouse")
 				)
 				:AddChild(UIElements.New("Spacer", "spacer"))
 			)
@@ -131,17 +159,17 @@ function private.GetGeneralSettingsFrame()
 				:AddChild(UIElements.New("SelectionDropdown", "chatTabDropdown")
 					:SetMargin(0, 16, 0, 0)
 					:SetItems(private.chatFrameList, private.chatFrameList)
-					:SetSettingInfo(next(private.chatFrameList) and TSM.db.global.coreOptions or nil, "chatFrame")
+					:SetSettingInfo(next(private.chatFrameList) and private.settings or nil, "chatFrame")
 					:SetScript("OnSelectionChanged", private.ChatTabOnSelectionChanged)
 				)
 				:AddChild(UIElements.New("SelectionDropdown", "forgetDropdown")
 					:SetMargin(0, 16, 0, 0)
-					:SetItems(private.characterList, private.characterList)
+					:SetItems(private.characterList, private.characterKeys)
 					:SetScript("OnSelectionChanged", private.ForgetCharacterOnSelectionChanged)
 				)
 				:AddChild(UIElements.New("MultiselectionDropdown", "ignoreDropdown")
 					:SetItems(private.guildList, private.guildList)
-					:SetSettingInfo(TSM.db.factionrealm.coreOptions, "ignoreGuilds")
+					:SetSettingInfo(private.settings, "ignoreGuilds")
 					:SetSelectionText(L["No Guilds"], L["%d Guilds"], L["All Guilds"])
 				)
 			)
@@ -180,14 +208,14 @@ function private.GetGeneralSettingsFrame()
 end
 
 function private.AddProfileRows(frame)
-	for index, profileName in TSM.db:ProfileIterator() do
+	for index, profileName in TSM.db:ScopeKeyIterator("profile") do
 		local isCurrentProfile = profileName == TSM.db:GetCurrentProfile()
 		local row = UIElements.New("Frame", "profileRow_"..index)
 			:SetLayout("HORIZONTAL")
 			:SetHeight(28)
 			:SetMargin(0, 0, 0, 8)
 			:SetPadding(8, 8, 4, 4)
-			:SetBackgroundColor(isCurrentProfile and "ACTIVE_BG" or "PRIMARY_BG_ALT", true)
+			:SetRoundedBackgroundColor(isCurrentProfile and "ACTIVE_BG" or "PRIMARY_BG_ALT")
 			:SetContext(profileName)
 			:SetScript("OnEnter", private.ProfileRowOnEnter)
 			:SetScript("OnLeave", private.ProfileRowOnLeave)
@@ -195,7 +223,6 @@ function private.AddProfileRows(frame)
 				:SetLayout("HORIZONTAL")
 				:SetHeight(20)
 				:AddChild(UIElements.New("Checkbox", "checkbox")
-					:SetCheckboxPosition("LEFT")
 					:SetText(profileName)
 					:SetFont("BODY_BODY2")
 					:SetChecked(isCurrentProfile)
@@ -262,9 +289,9 @@ function private.AddAccountSyncRows(frame)
 		local isConnected, connectedCharacter = Sync.GetConnectionStatus(account)
 		local statusText = nil
 		if isConnected then
-			statusText = Theme.GetFeedbackColor("GREEN"):ColorText(format(L["Connected to %s"], connectedCharacter))
+			statusText = Theme.GetColor("FEEDBACK_GREEN"):ColorText(format(L["Connected to %s"], connectedCharacter))
 		else
-			statusText = Theme.GetFeedbackColor("RED"):ColorText(L["Offline"])
+			statusText = Theme.GetColor("FEEDBACK_RED"):ColorText(L["Offline"])
 		end
 		statusText = statusText.." | "..table.concat(characters, ", ")
 		TempTable.Release(characters)
@@ -283,7 +310,7 @@ function private.CreateAccountSyncRow(id, statusText)
 		:SetHeight(28)
 		:SetMargin(0, 0, 0, 8)
 		:SetPadding(8, 8, 4, 4)
-		:SetBackgroundColor("PRIMARY_BG_ALT", true)
+		:SetRoundedBackgroundColor("PRIMARY_BG_ALT")
 		:SetScript("OnEnter", private.AccountSyncRowOnEnter)
 		:SetScript("OnLeave", private.AccountSyncRowOnLeave)
 		:AddChild(UIElements.New("Text", "status")
@@ -330,6 +357,10 @@ function private.FrameOnHide(frame)
 	private.frame = nil
 end
 
+function private.RegionWideOnValueChanged()
+	ReloadUI()
+end
+
 function private.GlobalOperationsOnValueChanged(checkbox, value)
 	-- restore the previous value until it's confirmed
 	checkbox:SetChecked(not value, true)
@@ -348,21 +379,33 @@ function private.ChatTabOnSelectionChanged(dropdown)
 end
 
 function private.ForgetCharacterOnSelectionChanged(self)
-	local character = self:GetSelectedItem()
-	if not character then return end
-	TSM.db:RemoveSyncCharacter(character)
-	TSM.db.factionrealm.internalData.pendingMail[character] = nil
-	TSM.db.factionrealm.internalData.characterGuilds[character] = nil
-	Log.PrintfUser(L["%s removed."], character)
-	assert(Table.RemoveByValue(private.characterList, character) == 1)
+	local key = self:GetSelectedItemKey()
+	if not key then
+		return
+	end
+	local character, factionrealm = strsplit(CHARACTER_SEP, key)
+	TSM.db:RemoveSyncCharacter(character, factionrealm)
+	local pendingMail = TSM.db:Get("factionrealm", factionrealm, "internalData", "pendingMail")
+	if pendingMail then
+		pendingMail[character] = nil
+	end
+	local characterGuilds = TSM.db:Get("factionrealm", factionrealm, "internalData", "characterGuilds")
+	if characterGuilds then
+		characterGuilds[character] = nil
+	end
+	Log.PrintfUser(L["%s removed."], Wow.FormatCharacterName(character, factionrealm))
+	local index = Table.KeyByValue(private.characterKeys, key)
+	assert(index)
+	tremove(private.characterList, index)
+	tremove(private.characterKeys, index)
 	self:SetSelectedItem(nil)
-		:SetItems(private.characterList)
+		:SetItems(private.characterList, private.characterKeys)
 		:Draw()
 end
 
 function private.ProfileRowOnEnter(frame)
 	local isCurrentProfile = frame:GetContext() == TSM.db:GetCurrentProfile()
-	frame:SetBackgroundColor("ACTIVE_BG", true)
+	frame:SetRoundedBackgroundColor("ACTIVE_BG")
 	if not isCurrentProfile then
 		frame:GetElement("resetBtn"):Show()
 		frame:GetElement("renameBtn"):Show()
@@ -374,7 +417,7 @@ end
 
 function private.ProfileRowOnLeave(frame)
 	local isCurrentProfile = frame:GetContext() == TSM.db:GetCurrentProfile()
-	frame:SetBackgroundColor(isCurrentProfile and "ACTIVE_BG" or "PRIMARY_BG_ALT", true)
+	frame:SetRoundedBackgroundColor(isCurrentProfile and "ACTIVE_BG" or "PRIMARY_BG_ALT")
 	if not isCurrentProfile then
 		frame:GetElement("resetBtn"):Hide()
 		frame:GetElement("renameBtn"):Hide()
@@ -393,7 +436,7 @@ function private.ProfileCheckboxOnValueChanged(checkbox, value)
 	end
 	-- uncheck the current profile row
 	local currentProfileIndex = nil
-	for index, profileName in TSM.db:ProfileIterator() do
+	for index, profileName in TSM.db:ScopeKeyIterator("profile") do
 		if profileName == TSM.db:GetCurrentProfile() then
 			assert(not currentProfileIndex)
 			currentProfileIndex = index
@@ -406,13 +449,13 @@ function private.ProfileCheckboxOnValueChanged(checkbox, value)
 	prevRow:GetElement("renameBtn"):Hide()
 	prevRow:GetElement("duplicateBtn"):Hide()
 	prevRow:GetElement("deleteBtn"):Hide()
-	prevRow:SetBackgroundColor("PRIMARY_BG_ALT", true)
+	prevRow:SetRoundedBackgroundColor("PRIMARY_BG_ALT")
 	prevRow:Draw()
 	-- set the profile
 	TSM.db:SetProfile(checkbox:GetText())
 	-- set this row as the current one
 	local newRow = checkbox:GetElement("__parent.__parent")
-	newRow:SetBackgroundColor("ACTIVE_BG", true)
+	newRow:SetRoundedBackgroundColor("ACTIVE_BG")
 	newRow:GetElement("resetBtn"):Show()
 	newRow:GetElement("renameBtn"):Show()
 	newRow:GetElement("duplicateBtn"):Show()
@@ -589,12 +632,12 @@ function private.AccountSyncRowOnEnter(frame)
 		frame:GetElement("sendProfileBtn"):Show()
 		frame:GetElement("removeBtn"):Show()
 	end
-	frame:SetBackgroundColor("ACTIVE_BG", true)
+	frame:SetRoundedBackgroundColor("ACTIVE_BG")
 	frame:Draw()
 end
 
 function private.AccountSyncRowOnLeave(frame)
-	frame:SetBackgroundColor("PRIMARY_BG_ALT", true)
+	frame:SetRoundedBackgroundColor("PRIMARY_BG_ALT")
 	frame:GetElement("sendProfileBtn"):Hide()
 	frame:GetElement("removeBtn"):Hide()
 	frame:Draw()
@@ -608,11 +651,11 @@ function private.AccountSyncTextOnEnter(text)
 		local mirrorConnected, mirrorSynced = Sync.GetMirrorStatus(account)
 		local mirrorStatus = nil
 		if not mirrorConnected then
-			mirrorStatus = Theme.GetFeedbackColor("RED"):ColorText(L["Not Connected"])
+			mirrorStatus = Theme.GetColor("FEEDBACK_RED"):ColorText(L["Not Connected"])
 		elseif not mirrorSynced then
-			mirrorStatus = Theme.GetFeedbackColor("YELLOW"):ColorText(L["Updating"])
+			mirrorStatus = Theme.GetColor("FEEDBACK_YELLOW"):ColorText(L["Updating"])
 		else
-			mirrorStatus = Theme.GetFeedbackColor("GREEN"):ColorText(L["Up to date"])
+			mirrorStatus = Theme.GetColor("FEEDBACK_GREEN"):ColorText(L["Up to date"])
 		end
 		tinsert(tooltipLines, L["Inventory / Gold Graph"]..Tooltip.GetSepChar()..mirrorStatus)
 		tinsert(tooltipLines, L["Profession Info"]..Tooltip.GetSepChar()..TSM.Crafting.Sync.GetStatus(account))

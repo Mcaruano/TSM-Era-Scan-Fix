@@ -7,7 +7,7 @@
 --- "What's New" Dialog
 -- @module WhatsNew
 
-local _, TSM = ...
+local TSM = select(2, ...) ---@type TSM
 local WhatsNew = TSM.UI:NewPackage("WhatsNew")
 local L = TSM.Include("Locale").GetTable()
 local Theme = TSM.Include("Util.Theme")
@@ -18,13 +18,11 @@ local private = {
 	settings = nil,
 	showTime = nil,
 }
-local WHATS_NEW_VERSION = 2
+local WHATS_NEW_VERSION = 4
 local CONTENT_LINES = {
-	Theme.GetColor("INDICATOR"):ColorText(L["Full Shadowlands Profession Support"]).." "..L["This includes support for optional reagents for your recipes as well as legendary craft ranks."],
-	Theme.GetColor("INDICATOR"):ColorText(L["Improved Group & Item Management."]).." "..L["Now you can drag and drop selected items between Groups, without needing to remove them or have them on hand."],
-	Theme.GetColor("INDICATOR"):ColorText(L["Custom Themes."]).." "..L["We've added the option to customise the colour palette to your own preferences, including the ability to export a string to share with your friends to import."],
-	Theme.GetColor("INDICATOR"):ColorText(L["Addon Optimisations."]).." "..L["Various under-the-hood tweaks and tuning have been implemented, with an aim to improve stability and reduce lag throughout the addon."],
-	Theme.GetColor("INDICATOR"):ColorText(L["DBRegionMinBuyoutAvg Retired."]).." "..L["The DBRegionMinBuyoutAvg price source has been retired, it can be removed from any operation or custom string you are using."],
+	Theme.GetColor("INDICATOR"):ColorText(L["Retail Region-Wide Tracking"]).." "..L["In retail, there's a new option in the settings to get TSM to make inventory and accounting data available from every realm in your region."],
+	Theme.GetColor("INDICATOR"):ColorText(L["Grouping Pets by Level"]).." "..L["You can now group pets by level, just like items."],
+	Theme.GetColor("INDICATOR"):ColorText(L["Crafting UI Improvements"]).." "..L["Many UI improvements have been made to the Dragonflight crafting experience, including support for mass milling / prospecting and easier quality and optional material selection."],
 }
 
 
@@ -45,10 +43,10 @@ function WhatsNew.GetDialog()
 	private.showTime = GetTime()
 	return UIElements.New("Frame", "whatsnew")
 		:SetLayout("VERTICAL")
-		:SetSize(650, 390)
+		:SetSize(650, 300)
 		:SetPadding(12, 12, 0, 12)
 		:AddAnchor("CENTER")
-		:SetBackgroundColor("FRAME_BG", true)
+		:SetRoundedBackgroundColor("FRAME_BG")
 		:AddChild(UIElements.New("Frame", "header")
 			:SetLayout("HORIZONTAL")
 			:SetHeight(24)
@@ -59,7 +57,7 @@ function WhatsNew.GetDialog()
 			:AddChild(UIElements.New("Text", "title")
 				:SetJustifyH("CENTER")
 				:SetFont("BODY_BODY1_BOLD")
-				:SetFormattedText(L["TSM %s: What's new"], "4.11")
+				:SetFormattedText(L["TSM %s: What's new"], "4.13")
 			)
 			:AddChild(UIElements.New("Button", "closeBtn")
 				:SetMargin(0, -4, 0, 0)
@@ -69,7 +67,7 @@ function WhatsNew.GetDialog()
 		)
 		:AddChild(UIElements.New("ScrollFrame", "body")
 			:AddChild(UIElements.New("Text", "content1")
-				:SetHeight(290)
+				:SetHeight(200)
 				:SetFont("BODY_BODY2")
 				:SetText(table.concat(CONTENT_LINES, "\n\n"))
 			)
